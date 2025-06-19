@@ -1,1 +1,346 @@
+-- Drawing 2D Box ESP Script
+-- Works standalone or with Simple Black UI
 
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- ESP Storage
+local ESPObjects = {}
+
+-- ESP Settings (standalone defaults)
+local ESPSettings = {
+    ESPEnabled = true, -- Default enabled when standalone
+    TeamColorEnabled = false,
+    TeamCheckEnabled = false,
+    BoxColor = Color3.fromRGB(255, 255, 255), -- Default white
+    BoxThickness = 1,
+    BoxTransparency = 1
+}
+
+-- Check if UI exists and get settings
+local function getUISettings()
+    local hasUI = false
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    
+    if playerGui then
+        local ui = playerGui:FindFirstChild("SimpleBlackUI")
+        if ui then
+            hasUI = true
+        end
+    end
+    
+    if hasUI then
+        -- Use global variables from UI if they exist
+        return {
+            ESPEnabled = _G.ESPEnabled or false,
+            TeamColorEnabled = _G.TeamColorEnabled or false,
+            TeamCheckEnabled = _G.TeamCheckEnabled or false
+        }
+    else
+        -- Use standalone settings
+        return {
+            ESPEnabled = ESPSettings.ESPEnabled,
+            TeamColorEnabled = ESPSettings.TeamColorEnabled,
+            TeamCheckEnabled = ESPSettings.TeamCheckEnabled
+        }
+    end
+end
+
+-- Function to create ESP box for a player
+local function createESP(player)
+    if player == LocalPlayer then return end
+    
+    local ESPTable = {
+        Player = player,
+        TopSide = Drawing.new("Line"),
+        BottomSide = Drawing.new("Line"),
+        LeftSide = Drawing.new("Line"),
+        RightSide = Drawing.new("Line")
+    }
+    
+    -- Configure all lines
+    for key, line in pairs(ESPTable) do
+        if typeof(line) == "Drawing" then
+            line.Thickness = ESPSettings.BoxThickness
+            line.Transparency = ESPSettings.BoxTransparency
+            line.Color = ESPSettings.BoxColor
+            line.Visible = false
+        end
+    end
+    
+    ESPObjects[player] = ESPTable
+end
+
+-- Function to remove ESP for a player
+local function removeESP(player)
+    local espTable = ESPObjects[player]
+    if espTable then
+        for key, line in pairs(espTable) do
+            if typeof(line) == "Drawing" then
+                line:Remove()
+            end
+        end
+        ESPObjects[player] = nil
+    end
+end
+
+-- Function to get team color
+local function getTeamColor(player)
+    if player.Team and player.Team.TeamColor then
+        return player.Team.TeamColor.Color
+    end
+    return ESPSettings.BoxColor
+end
+
+-- Function to check if player is on same team
+local function isSameTeam(player)
+    if not LocalPlayer.Team or not player.Team then
+        return false
+    end
+    return LocalPlayer.Team == player.Team
+end
+
+-- Function to update ESP for a player
+local function updateESP(player)
+    local espTable = ESPObjects[player]
+    if not espTable then return end
+    
+    local character = player.Character
+    if not character then
+        -- Hide ESP if no character
+        for key, line in pairs(espTable) do
+            if typeof(line) == "Drawing" then
+                line.Visible = false
+            end
+        end
+        return
+    end
+    
+    local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character:FindFirstChild("Humanoid")
+    
+    if not humanoidRootPart or not humanoid then
+        -- Hide ESP if no essential parts
+        for key, line in pairs(espTable) do
+            if typeof(line) == "Drawing" then
+                line.Visible = false
+            end
+        end
+        return
+    end
+    
+    -- Get current settings
+    local currentSettings = getUISettings()
+    
+    -- Check if ESP is enabled
+    if not currentSettings.ESPEnabled then
+        for key, line in pairs(espTable) do
+            if typeof(line) == "Drawing" then
+                line.Visible = false
+            end
+        end
+        return
+    end
+    
+    -- Check team check setting
+    if currentSettings.TeamCheckEnabled and isSameTeam(player) then
+        for key, line in pairs(espTable) do
+            if typeof(line) == "Drawing" then
+                line.Visible = false
+            end
+        end
+        return
+    end
+    
+    -- Get character bounds
+    local rootPosition = humanoidRootPart.Position
+    local rootSize = humanoidRootPart.Size
+    
+    -- Calculate box corners in 3D space
+    local topY = rootPosition.Y + (humanoid.HipHeight + rootSize.Y/2) + 1.5
+    local bottomY = rootPosition.Y - (humanoid.HipHeight + rootSize.Y/2) - 1.5
+    local sizeX = rootSize.X + 1
+    local sizeZ = rootSize.Z + 1
+    
+    -- 3D corners
+    local corners3D = {
+        Vector3.new(rootPosition.X - sizeX/2, topY, rootPosition.Z - sizeZ/2), -- Top Front Left
+        Vector3.new(rootPosition.X + sizeX/2, topY, rootPosition.Z - sizeZ/2), -- Top Front Right
+        Vector3.new(rootPosition.X - sizeX/2, topY, rootPosition.Z + sizeZ/2), -- Top Back Left
+        Vector3.new(rootPosition.X + sizeX/2, topY, rootPosition.Z + sizeZ/2), -- Top Back Right
+        Vector3.new(rootPosition.X - sizeX/2, bottomY, rootPosition.Z - sizeZ/2), -- Bottom Front Left
+        Vector3.new(rootPosition.X + sizeX/2, bottomY, rootPosition.Z - sizeZ/2), -- Bottom Front Right
+        Vector3.new(rootPosition.X - sizeX/2, bottomY, rootPosition.Z + sizeZ/2), -- Bottom Back Left
+        Vector3.new(rootPosition.X + sizeX/2, bottomY, rootPosition.Z + sizeZ/2), -- Bottom Back Right
+    }
+    
+    -- Convert to screen space
+    local corners2D = {}
+    local allVisible = true
+    
+    for i, corner in ipairs(corners3D) do
+        local screenPoint, onScreen = Camera:WorldToViewportPoint(corner)
+        corners2D[i] = Vector2.new(screenPoint.X, screenPoint.Y)
+        if not onScreen then
+            allVisible = false
+        end
+    end
+    
+    if not allVisible then
+        -- Hide ESP if not all corners are visible
+        for key, line in pairs(espTable) do
+            if typeof(line) == "Drawing" then
+                line.Visible = false
+            end
+        end
+        return
+    end
+    
+    -- Find bounding box
+    local minX, maxX = math.huge, -math.huge
+    local minY, maxY = math.huge, -math.huge
+    
+    for _, point in ipairs(corners2D) do
+        minX = math.min(minX, point.X)
+        maxX = math.max(maxX, point.X)
+        minY = math.min(minY, point.Y)
+        maxY = math.max(maxY, point.Y)
+    end
+    
+    -- Set color based on team color setting
+    local boxColor = ESPSettings.BoxColor
+    if currentSettings.TeamColorEnabled then
+        boxColor = getTeamColor(player)
+    end
+    
+    -- Update box lines
+    local topLeft = Vector2.new(minX, minY)
+    local topRight = Vector2.new(maxX, minY)
+    local bottomLeft = Vector2.new(minX, maxY)
+    local bottomRight = Vector2.new(maxX, maxY)
+    
+    -- Top side
+    espTable.TopSide.From = topLeft
+    espTable.TopSide.To = topRight
+    espTable.TopSide.Color = boxColor
+    espTable.TopSide.Visible = true
+    
+    -- Bottom side
+    espTable.BottomSide.From = bottomLeft
+    espTable.BottomSide.To = bottomRight
+    espTable.BottomSide.Color = boxColor
+    espTable.BottomSide.Visible = true
+    
+    -- Left side
+    espTable.LeftSide.From = topLeft
+    espTable.LeftSide.To = bottomLeft
+    espTable.LeftSide.Color = boxColor
+    espTable.LeftSide.Visible = true
+    
+    -- Right side
+    espTable.RightSide.From = topRight
+    espTable.RightSide.To = bottomRight
+    espTable.RightSide.Color = boxColor
+    espTable.RightSide.Visible = true
+end
+
+-- Function to update all ESP
+local function updateAllESP()
+    for player, _ in pairs(ESPObjects) do
+        if player and player.Parent then
+            updateESP(player)
+        else
+            removeESP(player)
+        end
+    end
+end
+
+-- Create ESP for existing players
+for _, player in pairs(Players:GetPlayers()) do
+    createESP(player)
+end
+
+-- Handle new players
+Players.PlayerAdded:Connect(function(player)
+    createESP(player)
+end)
+
+-- Handle players leaving
+Players.PlayerRemoving:Connect(function(player)
+    removeESP(player)
+end)
+
+-- Handle player respawning
+Players.PlayerAdded:Connect(function(player)
+    player.CharacterAdded:Connect(function()
+        wait(1) -- Wait for character to fully load
+        if ESPObjects[player] then
+            updateESP(player)
+        end
+    end)
+end)
+
+-- Handle existing players respawning
+for _, player in pairs(Players:GetPlayers()) do
+    if player ~= LocalPlayer then
+        player.CharacterAdded:Connect(function()
+            wait(1)
+            if ESPObjects[player] then
+                updateESP(player)
+            end
+        end)
+    end
+end
+
+-- Main update loop
+RunService.Heartbeat:Connect(updateAllESP)
+
+-- Global functions for UI integration
+_G.SetESPEnabled = function(enabled)
+    _G.ESPEnabled = enabled
+end
+
+_G.SetTeamColorEnabled = function(enabled)
+    _G.TeamColorEnabled = enabled
+end
+
+_G.SetTeamCheckEnabled = function(enabled)
+    _G.TeamCheckEnabled = enabled
+end
+
+-- Standalone toggle functions (for when no UI is present)
+_G.ToggleESP = function()
+    ESPSettings.ESPEnabled = not ESPSettings.ESPEnabled
+    print("ESP:", ESPSettings.ESPEnabled and "ON" or "OFF")
+end
+
+_G.ToggleTeamColor = function()
+    ESPSettings.TeamColorEnabled = not ESPSettings.TeamColorEnabled
+    print("Team Color:", ESPSettings.TeamColorEnabled and "ON" or "OFF")
+end
+
+_G.ToggleTeamCheck = function()
+    ESPSettings.TeamCheckEnabled = not ESPSettings.TeamCheckEnabled
+    print("Team Check:", ESPSettings.TeamCheckEnabled and "ON" or "OFF")
+end
+
+-- Cleanup function
+_G.CleanupESP = function()
+    for player, _ in pairs(ESPObjects) do
+        removeESP(player)
+    end
+    ESPObjects = {}
+end
+
+-- Print status
+local hasUI = LocalPlayer.PlayerGui:FindFirstChild("SimpleBlackUI") ~= nil
+if hasUI then
+    print("Drawing 2D Box ESP loaded with UI integration!")
+else
+    print("Drawing 2D Box ESP loaded in standalone mode!")
+    print("Use _G.ToggleESP(), _G.ToggleTeamColor(), _G.ToggleTeamCheck() to control")
+end
