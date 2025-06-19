@@ -1,0 +1,363 @@
+-- Advanced Aimbot Script with GUI Support
+-- Works standalone or with the UI system
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Camera = workspace.CurrentCamera
+local TweenService = game:GetService("TweenService")
+
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+
+-- Aimbot Configuration
+local AimbotConfig = {
+    Enabled = _G.AimbotEnabled or false,
+    WallCheck = _G.WallCheckEnabled or true,
+    Smoothness = _G.SmoothnessValue or 5,
+    FOV = 200,
+    TargetPart = "Head",
+    TeamCheck = _G.TeamCheckEnabled or false,
+    ShowFOV = false,
+    FOVColor = Color3.fromRGB(255, 255, 255),
+    TargetHighlight = true,
+    PredictMovement = true,
+    MaxDistance = 1000
+}
+
+-- Variables
+local CurrentTarget = nil
+local IsAiming = false
+local FOVCircle = nil
+local TargetHighlightBox = nil
+local Connection = nil
+
+-- Create FOV Circle
+local function CreateFOVCircle()
+    if FOVCircle then FOVCircle:Remove() end
+    
+    FOVCircle = Drawing.new("Circle")
+    FOVCircle.Color = AimbotConfig.FOVColor
+    FOVCircle.Thickness = 2
+    FOVCircle.NumSides = 50
+    FOVCircle.Radius = AimbotConfig.FOV
+    FOVCircle.Filled = false
+    FOVCircle.Transparency = 0.5
+    FOVCircle.Visible = AimbotConfig.ShowFOV
+    FOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+end
+
+-- Create Target Highlight
+local function CreateTargetHighlight()
+    if TargetHighlightBox then TargetHighlightBox:Remove() end
+    
+    TargetHighlightBox = Drawing.new("Square")
+    TargetHighlightBox.Color = Color3.fromRGB(255, 0, 0)
+    TargetHighlightBox.Thickness = 3
+    TargetHighlightBox.Filled = false
+    TargetHighlightBox.Transparency = 0.8
+    TargetHighlightBox.Visible = false
+end
+
+-- Wall Check Function
+local function WallCheck(targetPosition)
+    if not AimbotConfig.WallCheck then return true end
+    
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+    raycastParams.FilterDescendantsInstances = {LocalPlayer.Character}
+    
+    local raycastResult = workspace:Raycast(Camera.CFrame.Position, (targetPosition - Camera.CFrame.Position).Unit * (targetPosition - Camera.CFrame.Position).Magnitude, raycastParams)
+    
+    if raycastResult then
+        local hitPart = raycastResult.Instance
+        local hitCharacter = hitPart.Parent
+        
+        -- Check if we hit the target or a part of the target
+        if hitCharacter:FindFirstChild("Humanoid") then
+            return true
+        end
+        return false
+    end
+    
+    return true
+end
+
+-- Get Closest Player
+local function GetClosestPlayer()
+    local ClosestPlayer = nil
+    local ShortestDistance = math.huge
+    local CenterScreen = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    
+    for _, Player in pairs(Players:GetPlayers()) do
+        if Player ~= LocalPlayer and Player.Character and Player.Character:FindFirstChild(AimbotConfig.TargetPart) then
+            -- Team Check
+            if AimbotConfig.TeamCheck and Player.Team == LocalPlayer.Team then
+                continue
+            end
+            
+            local Character = Player.Character
+            local TargetPart = Character[AimbotConfig.TargetPart]
+            local Humanoid = Character:FindFirstChild("Humanoid")
+            
+            -- Check if player is alive
+            if not Humanoid or Humanoid.Health <= 0 then
+                continue
+            end
+            
+            -- Distance check
+            local Distance = (TargetPart.Position - Camera.CFrame.Position).Magnitude
+            if Distance > AimbotConfig.MaxDistance then
+                continue
+            end
+            
+            -- Screen position and FOV check
+            local ScreenPosition, OnScreen = Camera:WorldToViewportPoint(TargetPart.Position)
+            if OnScreen then
+                local DistanceFromCenter = (Vector2.new(ScreenPosition.X, ScreenPosition.Y) - CenterScreen).Magnitude
+                
+                if DistanceFromCenter < AimbotConfig.FOV and DistanceFromCenter < ShortestDistance then
+                    -- Wall check
+                    if WallCheck(TargetPart.Position) then
+                        ClosestPlayer = Player
+                        ShortestDistance = DistanceFromCenter
+                    end
+                end
+            end
+        end
+    end
+    
+    return ClosestPlayer
+end
+
+-- Predict Movement
+local function PredictMovement(targetPart)
+    if not AimbotConfig.PredictMovement then
+        return targetPart.Position
+    end
+    
+    local velocity = targetPart.AssemblyLinearVelocity
+    local distance = (targetPart.Position - Camera.CFrame.Position).Magnitude
+    local timeToTarget = distance / 1000 -- Adjust this value based on weapon speed
+    
+    return targetPart.Position + (velocity * timeToTarget)
+end
+
+-- Smooth Aim Function
+local function SmoothAim(targetPosition)
+    local currentCFrame = Camera.CFrame
+    local targetCFrame = CFrame.lookAt(currentCFrame.Position, targetPosition)
+    
+    -- Calculate smoothness factor (higher smoothness = slower movement)
+    local smoothnessFactor = AimbotConfig.Smoothness / 100
+    
+    -- Interpolate between current and target
+    local newCFrame = currentCFrame:Lerp(targetCFrame, 1 - smoothnessFactor)
+    Camera.CFrame = newCFrame
+end
+
+-- Update Target Highlight
+local function UpdateTargetHighlight(target)
+    if not AimbotConfig.TargetHighlight or not TargetHighlightBox then return end
+    
+    if target and target.Character and target.Character:FindFirstChild(AimbotConfig.TargetPart) then
+        local targetPart = target.Character[AimbotConfig.TargetPart]
+        local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+        
+        if onScreen then
+            TargetHighlightBox.Position = Vector2.new(screenPos.X - 25, screenPos.Y - 25)
+            TargetHighlightBox.Size = Vector2.new(50, 50)
+            TargetHighlightBox.Visible = true
+        else
+            TargetHighlightBox.Visible = false
+        end
+    else
+        TargetHighlightBox.Visible = false
+    end
+end
+
+-- Main Aimbot Loop
+local function AimbotLoop()
+    if not AimbotConfig.Enabled or not IsAiming then
+        CurrentTarget = nil
+        if TargetHighlightBox then TargetHighlightBox.Visible = false end
+        return
+    end
+    
+    -- Get closest target
+    local Target = GetClosestPlayer()
+    CurrentTarget = Target
+    
+    if Target and Target.Character and Target.Character:FindFirstChild(AimbotConfig.TargetPart) then
+        local TargetPart = Target.Character[AimbotConfig.TargetPart]
+        local PredictedPosition = PredictMovement(TargetPart)
+        
+        -- Smooth aim to target
+        SmoothAim(PredictedPosition)
+        
+        -- Update highlight
+        UpdateTargetHighlight(Target)
+    else
+        if TargetHighlightBox then TargetHighlightBox.Visible = false end
+    end
+end
+
+-- Input Handling
+local function OnInputBegan(input, gameProcessed)
+    if gameProcessed then return end
+    
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then -- Right click
+        IsAiming = true
+    end
+end
+
+local function OnInputEnded(input, gameProcessed)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then -- Right click
+        IsAiming = false
+        CurrentTarget = nil
+        if TargetHighlightBox then TargetHighlightBox.Visible = false end
+    end
+end
+
+-- Initialize Aimbot
+local function InitializeAimbot()
+    -- Create visual elements
+    CreateFOVCircle()
+    CreateTargetHighlight()
+    
+    -- Connect input events
+    UserInputService.InputBegan:Connect(OnInputBegan)
+    UserInputService.InputEnded:Connect(OnInputEnded)
+    
+    -- Start aimbot loop
+    Connection = RunService.Heartbeat:Connect(AimbotLoop)
+    
+    print("Aimbot initialized successfully!")
+end
+
+-- Cleanup function
+local function CleanupAimbot()
+    if Connection then
+        Connection:Disconnect()
+        Connection = nil
+    end
+    
+    if FOVCircle then
+        FOVCircle:Remove()
+        FOVCircle = nil
+    end
+    
+    if TargetHighlightBox then
+        TargetHighlightBox:Remove()
+        TargetHighlightBox = nil
+    end
+    
+    CurrentTarget = nil
+    IsAiming = false
+    
+    print("Aimbot cleaned up!")
+end
+
+-- GUI Integration Functions
+_G.SetAimbotEnabled = function(enabled)
+    AimbotConfig.Enabled = enabled
+    _G.AimbotEnabled = enabled
+    
+    if not enabled then
+        IsAiming = false
+        CurrentTarget = nil
+        if TargetHighlightBox then TargetHighlightBox.Visible = false end
+    end
+end
+
+_G.SetWallCheckEnabled = function(enabled)
+    AimbotConfig.WallCheck = enabled
+    _G.WallCheckEnabled = enabled
+end
+
+_G.SetSmoothnessValue = function(value)
+    AimbotConfig.Smoothness = math.clamp(value, 1, 10)
+    _G.SmoothnessValue = AimbotConfig.Smoothness
+end
+
+_G.SetTeamCheckEnabled = function(enabled)
+    AimbotConfig.TeamCheck = enabled
+    _G.TeamCheckEnabled = enabled
+end
+
+-- Additional configuration functions
+_G.SetAimbotFOV = function(fov)
+    AimbotConfig.FOV = fov
+    if FOVCircle then
+        FOVCircle.Radius = fov
+    end
+end
+
+_G.SetShowFOV = function(show)
+    AimbotConfig.ShowFOV = show
+    if FOVCircle then
+        FOVCircle.Visible = show
+    end
+end
+
+_G.SetTargetPart = function(part)
+    AimbotConfig.TargetPart = part
+end
+
+_G.SetMaxDistance = function(distance)
+    AimbotConfig.MaxDistance = distance
+end
+
+_G.SetTargetHighlight = function(enabled)
+    AimbotConfig.TargetHighlight = enabled
+    if not enabled and TargetHighlightBox then
+        TargetHighlightBox.Visible = false
+    end
+end
+
+-- Cleanup function for GUI
+_G.CleanupAimbot = CleanupAimbot
+
+-- Update configuration from global variables
+if _G.AimbotEnabled ~= nil then AimbotConfig.Enabled = _G.AimbotEnabled end
+if _G.WallCheckEnabled ~= nil then AimbotConfig.WallCheck = _G.WallCheckEnabled end
+if _G.SmoothnessValue ~= nil then AimbotConfig.Smoothness = _G.SmoothnessValue end
+if _G.TeamCheckEnabled ~= nil then AimbotConfig.TeamCheck = _G.TeamCheckEnabled end
+
+-- Initialize the aimbot
+InitializeAimbot()
+
+-- Standalone keybinds (if not using GUI)
+if not _G.UILoaded then
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if gameProcessed then return end
+        
+        -- Toggle aimbot with F key
+        if input.KeyCode == Enum.KeyCode.F then
+            AimbotConfig.Enabled = not AimbotConfig.Enabled
+            print("Aimbot:", AimbotConfig.Enabled and "ON" or "OFF")
+        end
+        
+        -- Toggle wall check with G key
+        if input.KeyCode == Enum.KeyCode.G then
+            AimbotConfig.WallCheck = not AimbotConfig.WallCheck
+            print("Wall Check:", AimbotConfig.WallCheck and "ON" or "OFF")
+        end
+        
+        -- Toggle FOV circle with H key
+        if input.KeyCode == Enum.KeyCode.H then
+            AimbotConfig.ShowFOV = not AimbotConfig.ShowFOV
+            if FOVCircle then FOVCircle.Visible = AimbotConfig.ShowFOV end
+            print("FOV Circle:", AimbotConfig.ShowFOV and "ON" or "OFF")
+        end
+    end)
+    
+    print("Standalone Aimbot Controls:")
+    print("F - Toggle Aimbot")
+    print("G - Toggle Wall Check") 
+    print("H - Toggle FOV Circle")
+    print("Hold Right Click - Aim")
+end
+
+print("Advanced Aimbot loaded successfully!")
+print("Hold RIGHT CLICK to aim at targets")
